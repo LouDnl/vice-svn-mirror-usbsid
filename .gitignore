@@ -1,5 +1,6 @@
 *
 !.gitignore
+!README.OLD.md
 !*.c
 !*.cc
 !*.cpp
