@@ -1091,17 +1091,6 @@ int USBSID_Class::LIBUSB_DetachKernelDriver(void)
       rc = -1;
       break;
     }
-#ifdef __APPLE__
-    /* On macOS the IOKit backend requires an explicit alt-setting call after
-     * claim to activate the interface pipes; without it libusb_bulk_transfer
-     * returns LIBUSB_ERROR_INVALID_PARAM even on a successfully claimed iface. */
-    rc = libusb_set_interface_alt_setting(devh, if_num, 0);
-    if (rc < 0) {
-      USBERR(stderr, "[USBSID] Error setting alt setting on interface %d: %d, %s: %s\r\n", if_num, rc, libusb_error_name(rc), libusb_strerror(rc));
-      rc = -1;
-      break;
-    }
-#endif
   }
   return rc;
 }
@@ -1120,11 +1109,12 @@ int USBSID_Class::LIBUSB_ConfigureDevice(void)
 
   /* set line encoding here */  // NOTE: NOT USED FOR CDC
   rc = libusb_control_transfer(devh, 0x21, 0x20, 0, 0, encoding, sizeof(encoding), 0);
-  if (rc < 0 || rc != 7) {  /* should return 7 for the encoding size */
+  if (rc < 0 || (rc != 0 && rc != 7)) {  /* should return 0 or 7 (encoding size) */
     USBERR(stderr, "[USBSID] Error configuring line encoding during control transfer: %d, %s: %s\r\n", rc, libusb_error_name(rc), libusb_strerror(rc));
     rc = -1;
     return rc;
   }
+  rc = (rc == 7) ? 0 : rc;  /* normalise: 7 means 7 bytes sent, treat as success */
   return rc;
 }
 
@@ -1294,8 +1284,12 @@ int USBSID_Class::LIBUSB_Setup(bool start_threaded, bool with_cycles)
     goto out;
   }
 
-  if (rc > 0 && rc == 7) {  /* 7 for the return size of the encoding */
-    rc = 0;
+  {
+    /* Flush any stale data left on the endpoints from a previous session */
+    int transferred = 0;
+    unsigned char flush_byte[1];
+    libusb_bulk_transfer(devh, EP_OUT_ADDR, flush_byte, 0, &transferred, 1);
+    libusb_bulk_transfer(devh, EP_IN_ADDR,  flush_byte, 0, &transferred, 1);
   }
 
   return rc;
