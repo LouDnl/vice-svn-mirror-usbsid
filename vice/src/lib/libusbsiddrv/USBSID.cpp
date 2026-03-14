@@ -456,7 +456,8 @@ unsigned char USBSID_Class::USBSID_SingleRead(uint8_t reg)
     USBERR(stderr, "[USBSID] Timeout error while reading (%d)\n", actual_length);
     return 0;
   } else if (rc < 0) {
-    USBERR(stderr, "[USBSID] Error while waiting for char while reading\n");
+    USBERR(stderr, "[USBSID] Error while waiting for char while reading: %d, %s: %s\n",
+      rc, libusb_error_name(rc), libusb_strerror(rc));
     return 0;
   }
   return result[0];
@@ -471,7 +472,8 @@ unsigned char USBSID_Class::USBSID_SingleReadConfig(unsigned char *buff, int len
     USBERR(stderr, "[USBSID] Timeout error while reading (%d)\n", actual_length);
     return 0;
   } else if (rc < 0) {
-    USBERR(stderr, "[USBSID] Error while waiting for char while reading\n");
+    USBERR(stderr, "[USBSID] Error while waiting for char while reading: %d, %s: %s\n",
+      rc, libusb_error_name(rc), libusb_strerror(rc));
     return 0;
   }
   return *buff;
@@ -1010,8 +1012,18 @@ int USBSID_Class::LIBUSB_OpenDevice(void)
   devh = libusb_open_device_with_vid_pid(ctx, VENDOR_ID, PRODUCT_ID);
   if (!devh) {
     rc = -1;
-    USBERR(stderr, "[USBSID] Error opening USB device with VID & PID: %d %s: %s\r\n",
-      rc, libusb_error_name(rc), libusb_strerror((enum libusb_error)rc));
+    USBERR(stderr, "[USBSID] Error opening USB device with VID & PID: %d %s: %s\r\n", rc, libusb_error_name(rc), libusb_strerror(rc));
+    return rc;
+  }
+  /* On macOS the IOKit CDC driver will reclaim interfaces unless we enable
+   * auto-detach, which makes libusb detach/reattach the kernel driver
+   * automatically around libusb_claim_interface / libusb_release_interface. */
+  rc = libusb_set_auto_detach_kernel_driver(devh, 1);
+  if (rc == LIBUSB_ERROR_NOT_SUPPORTED) {
+    /* Not supported on this platform (Windows/older libusb) — ignore */
+    rc = 0;
+  } else if (rc < 0) {
+    USBERR(stderr, "[USBSID] Error setting auto detach kernel driver: %d %s: %s\r\n", rc, libusb_error_name(rc), libusb_strerror(rc));
   }
   return rc;
 }
@@ -1322,7 +1334,7 @@ void LIBUSB_CALL USBSID_Class::usb_out(struct libusb_transfer *transfer)
     USBERR(stderr, "[USBSID] Sent data length %d is different from the defined buffer length: %d or actual length %d\r", transfer->length, len_out_buffer, transfer->actual_length);
   }
 
-  // BUG: Resubmit is shit for normal tunes but good for cycle exact digitunes, sigh...
+  // WARNING: Resubmit is shit for normal tunes but good for cycle exact digitunes, sigh...
   // if (threaded) libusb_submit_transfer(transfer_out);  /* Resubmit queue when finished */
   return;
 }
