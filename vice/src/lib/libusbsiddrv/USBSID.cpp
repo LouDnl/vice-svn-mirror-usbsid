@@ -1091,6 +1091,17 @@ int USBSID_Class::LIBUSB_DetachKernelDriver(void)
       rc = -1;
       break;
     }
+#ifdef __APPLE__
+    /* On macOS the IOKit backend requires an explicit alt-setting call after
+     * claim to activate the interface pipes; without it libusb_bulk_transfer
+     * returns LIBUSB_ERROR_INVALID_PARAM even on a successfully claimed iface. */
+    rc = libusb_set_interface_alt_setting(devh, if_num, 0);
+    if (rc < 0) {
+      USBERR(stderr, "[USBSID] Error setting alt setting on interface %d: %d, %s: %s\r\n", if_num, rc, libusb_error_name(rc), libusb_strerror(rc));
+      rc = -1;
+      break;
+    }
+#endif
   }
   return rc;
 }
