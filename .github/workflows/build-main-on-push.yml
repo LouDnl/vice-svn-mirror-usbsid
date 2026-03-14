@@ -530,7 +530,7 @@ jobs:
   build_mac:
     name: Build macOS Binaries
     env:
-      SHARED_DEPS: "autoconf automake pkg-config xa lame dos2unix giflib libpng giflib libvorbis flac"
+      SHARED_DEPS: "autoconf automake pkg-config xa lame dos2unix giflib libpng giflib libvorbis flac libusb"
     needs: [create_release, build_doc]
     strategy:
       fail-fast: false
@@ -567,7 +567,7 @@ jobs:
           brew update
           brew install ${{ env.SHARED_DEPS }} ${{ matrix.ui.deps }}
           echo "brew_prefix=$(brew --prefix)" >> $GITHUB_OUTPUT
-      
+
       - name: Build
         id: build
         run: |
