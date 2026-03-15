@@ -7,7 +7,7 @@
  * This file is part of USBSID-Pico (https://github.com/LouDnl/USBSID-Pico-driver)
  * File author: LouD
  *
- * Copyright (c) 2024-2025 LouD
+ * Copyright (c) 2024-2026 LouD
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -37,7 +37,12 @@ using namespace std;
 static inline uint8_t* us_alloc(size_t alignment, size_t size)
 {
 #if defined(__US_LINUX_COMPILE)
-  return (uint8_t*)aligned_alloc(alignment, size);
+  #ifdef HAVE_ALIGNED_ALLOC
+    return (uint8_t*)aligned_alloc(alignment, size);
+  #else
+    (void)alignment;
+    return (uint8_t*)malloc(size);
+  #endif
 #elif defined(__US_WINDOWS_COMPILE)
   return (uint8_t*)_aligned_malloc(size, alignment);
 #else
@@ -373,7 +378,9 @@ int USBSID_Class::USBSID_GetNumSIDs(void)
   if (!us_Initialised) return 0;
   if (numsids == 0) {
     uint8_t configbuff[6] = {(COMMAND << 6 | CONFIG), 0x39, 0, 0, 0, 0};
+    /* fprintf(stderr, "[USBSID] Start GeNumSIDs write\n"); */
     USBSID_SingleWrite(configbuff, 6);
+    /* fprintf(stderr, "[USBSID] Start GeNumSIDs read\n"); */
     numsids = USBSID_SingleReadConfig(result, 1);
     return numsids;
   } else {
@@ -398,7 +405,9 @@ int USBSID_Class::USBSID_GetPCBVersion(void)
   if (!us_Initialised) return 0;
   if (pcbversion == -1) {
     uint8_t configbuff[6] = {(COMMAND << 6 | CONFIG), 0x81, 0x1, 0, 0, 0};
+    /* fprintf(stderr, "[USBSID] Start PCB version write\n"); */
     USBSID_SingleWrite(configbuff, 6);
+    /* fprintf(stderr, "[USBSID] Start PCB version read\n"); */
     pcbversion = USBSID_SingleReadConfig(result, 1);
   }
   return pcbversion;
@@ -433,7 +442,7 @@ void USBSID_Class::USBSID_ToggleStereo(void)
 
 /* SYNCHRONOUS */
 
-void USBSID_Class::USBSID_SingleWrite(unsigned char *buff, int len)
+void USBSID_Class::USBSID_SingleWrite(unsigned char *buff, size_t len)
 {
   if (!us_Initialised) return;
   int actual_length = 0;
@@ -463,11 +472,12 @@ unsigned char USBSID_Class::USBSID_SingleRead(uint8_t reg)
   return result[0];
 }
 
-unsigned char USBSID_Class::USBSID_SingleReadConfig(unsigned char *buff, int len)
+unsigned char USBSID_Class::USBSID_SingleReadConfig(unsigned char *buff, size_t len)
 {
   if (!us_Initialised) return 0;
   int actual_length;
   rc = libusb_bulk_transfer(devh, EP_IN_ADDR, buff, len, &actual_length, 0);
+  /* fprintf(stderr, "[USBSID] ReadConfig: rc=%d actual_length=%d buff[0]=%d\n", rc, actual_length, buff[0]); */
   if (rc == LIBUSB_ERROR_TIMEOUT) {
     USBERR(stderr, "[USBSID] Timeout error while reading (%d)\n", actual_length);
     return 0;
@@ -476,6 +486,10 @@ unsigned char USBSID_Class::USBSID_SingleReadConfig(unsigned char *buff, int len
       rc, libusb_error_name(rc), libusb_strerror(rc));
     return 0;
   }
+/*   if (actual_length == 0) {
+    USBERR(stderr, "[USBSID] Zero-length read completed (kext consumed data?), retrying\n");
+    return USBSID_SingleReadConfig(buff, len);  // retry once
+  } */
   return *buff;
 }
 
@@ -657,8 +671,8 @@ int USBSID_Class::USBSID_InitThread(void)
   flush_buffer = 0;
   run_thread = buffer_pos = 1;
   threaded = withcycles = true;
-  USBSID_InitRingBuffer(ring_size, diff_size);
   pthread_mutex_lock(&us_mutex);
+  USBSID_InitRingBuffer(ring_size, diff_size);
   us_thread++;
   pthread_mutex_unlock(&us_mutex);
   int error;
@@ -1013,17 +1027,6 @@ int USBSID_Class::LIBUSB_OpenDevice(void)
   if (!devh) {
     rc = -1;
     USBERR(stderr, "[USBSID] Error opening USB device with VID & PID: %d %s: %s\r\n", rc, libusb_error_name(rc), libusb_strerror(rc));
-    return rc;
-  }
-  /* On macOS the IOKit CDC driver will reclaim interfaces unless we enable
-   * auto-detach, which makes libusb detach/reattach the kernel driver
-   * automatically around libusb_claim_interface / libusb_release_interface. */
-  rc = libusb_set_auto_detach_kernel_driver(devh, 1);
-  if (rc == LIBUSB_ERROR_NOT_SUPPORTED) {
-    /* Not supported on this platform (Windows/older libusb) — ignore */
-    rc = 0;
-  } else if (rc < 0) {
-    USBERR(stderr, "[USBSID] Error setting auto detach kernel driver: %d %s: %s\r\n", rc, libusb_error_name(rc), libusb_strerror(rc));
   }
   return rc;
 }
@@ -1044,7 +1047,7 @@ void USBSID_Class::LIBUSB_CloseDevice(void)
   return;
 }
 
-int USBSID_Class::LIBUSB_Available(uint16_t vendor_id, uint16_t product_id)
+int USBSID_Class::LIBUSB_Available(libusb_context *ctx_, uint16_t vendor_id, uint16_t product_id)
 {
   struct libusb_device **devs;
   struct libusb_device *dev;
@@ -1053,7 +1056,7 @@ int USBSID_Class::LIBUSB_Available(uint16_t vendor_id, uint16_t product_id)
   us_Available = false;
   us_Found = 0;
 
-  if (libusb_get_device_list(ctx, &devs) < 0)
+  if (libusb_get_device_list(ctx_, &devs) < 0)
     return 0;
 
   while ((dev = devs[i++]) != NULL) {
@@ -1109,12 +1112,11 @@ int USBSID_Class::LIBUSB_ConfigureDevice(void)
 
   /* set line encoding here */  // NOTE: NOT USED FOR CDC
   rc = libusb_control_transfer(devh, 0x21, 0x20, 0, 0, encoding, sizeof(encoding), 0);
-  if (rc < 0 || (rc != 0 && rc != 7)) {  /* should return 0 or 7 (encoding size) */
+  if (rc < 0 || rc != 7) {  /* should return 7 for the encoding size */
     USBERR(stderr, "[USBSID] Error configuring line encoding during control transfer: %d, %s: %s\r\n", rc, libusb_error_name(rc), libusb_strerror(rc));
     rc = -1;
     return rc;
   }
-  rc = (rc == 7) ? 0 : rc;  /* normalise: 7 means 7 bytes sent, treat as success */
   return rc;
 }
 
@@ -1253,8 +1255,8 @@ int USBSID_Class::LIBUSB_Setup(bool start_threaded, bool with_cycles)
   libusb_set_option(ctx, LIBUSB_OPTION_LOG_LEVEL, 0);
 
   /* Check for an available USBSID-Pico */
-  if (LIBUSB_Available(VENDOR_ID, PRODUCT_ID) <= 0) {
-    USBDBG(stderr, "[USBSID] USBSID-Pico not connected\n");
+  if (LIBUSB_Available(ctx, VENDOR_ID, PRODUCT_ID) <= 0) {
+    USBERR(stderr, "[USBSID] USBSID-Pico not connected\n");
     goto out;
   }
 
@@ -1284,12 +1286,8 @@ int USBSID_Class::LIBUSB_Setup(bool start_threaded, bool with_cycles)
     goto out;
   }
 
-  {
-    /* Flush any stale data left on the endpoints from a previous session */
-    int transferred = 0;
-    unsigned char flush_byte[1];
-    libusb_bulk_transfer(devh, EP_OUT_ADDR, flush_byte, 0, &transferred, 1);
-    libusb_bulk_transfer(devh, EP_IN_ADDR,  flush_byte, 0, &transferred, 1);
+  if (rc > 0 && rc == 7) {  /* 7 for the return size of the encoding */
+    rc = 0;
   }
 
   return rc;
